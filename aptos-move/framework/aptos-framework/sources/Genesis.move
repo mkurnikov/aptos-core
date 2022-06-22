@@ -207,7 +207,7 @@ module AptosFramework::Genesis {
             1,
             0,
             0,
-            0,
+            100000,
             0,
             0,
             true,
