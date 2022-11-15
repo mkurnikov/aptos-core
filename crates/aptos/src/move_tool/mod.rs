@@ -255,7 +255,7 @@ impl CliCommand<()> for InitPackage {
 /// Creates a new Move package at the given location
 ///
 /// This will create a directory for a Move package and a corresponding
-/// <PROJECT_NAME>
+/// <PACKAGE_NAME>
 /// ─┐
 ///  ├📂 `tests` folder
 ///  │ └─ `tests/<PACKAGE_NAME>_tests.move`
@@ -264,19 +264,19 @@ impl CliCommand<()> for InitPackage {
 ///  └─  `Move.toml` file.
 ///
 /// Examples:
-/// $ aptos new ~/my_project
-/// $ aptos new ~/my_project --named_addresses self=_,std=0x1
-/// $ aptos new ~/my_project --name DemoProject --assume-yes
+/// $ aptos new ~/my_package
+/// $ aptos new ~/my_package --named_addresses self=_,std=0x1
+/// $ aptos new ~/my_package --name DemoPackage --assume-yes
 #[derive(Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct NewPackage {
     /// Directory to create the new Move package
-    /// The folder name can be used as the project name.
+    /// The folder name can be used as the package name.
     /// If the directory does not exist, it will be created
     ///
     /// Example:
-    /// ~/path/to/my_new_project
-    /// ./MyNewProject
+    /// ~/path/to/my_new_package
+    /// ./MyNewPackage
     #[clap(verbatim_doc_comment, value_parser)]
     pub(crate) package_dir: PathBuf,
 
@@ -307,14 +307,13 @@ impl CliCommand<()> for NewPackage {
     }
 
     async fn execute(self) -> CliTypedResult<()> {
-        let project_dir = &self.package_dir;
-
-        if project_dir.exists() {
-            let is_empty = project_dir
+        let package_dir = &self.package_dir;
+        if package_dir.exists() {
+            let is_empty = package_dir
                 .read_dir()
                 .map_err(|_| {
                     CliError::CommandArgumentError(format!(
-                        "Couldn't read the catalog {project_dir:?}"
+                        "Couldn't read the catalog {package_dir:?}"
                     ))
                 })?
                 .filter_map(|item| item.ok())
@@ -322,15 +321,15 @@ impl CliCommand<()> for NewPackage {
                 .is_none();
             if !is_empty {
                 return Err(CliError::CommandArgumentError(format!(
-                    "The directory is not empty {project_dir:?}"
+                    "The directory is not empty {package_dir:?}"
                 )));
             }
         }
 
-        let project_name = match self.name {
+        let package_name = match self.name {
             Some(name) => name.clone(),
             None => {
-                let default = project_dir
+                let default = package_dir
                     .file_name()
                     .map(|name| {
                         name.to_string_lossy()
@@ -341,82 +340,66 @@ impl CliCommand<()> for NewPackage {
                 if self.prompt_options.assume_yes {
                     default
                 } else {
-                    eprintln!("Enter the project name: [defaults to {default}]");
-                    let project_name = read_line("Project name")?.trim().to_string();
+                    eprintln!("Enter the package name [defaults to {default:?}]:");
+                    let package_name = read_line("Package name")?.trim().to_string();
 
-                    if project_name.is_empty() {
+                    if package_name.is_empty() {
                         default
                     } else {
-                        project_name
+                        package_name
                     }
                 }
             }
         };
 
-        let named_addresses = if self.named_addresses.is_empty() && !self.prompt_options.assume_yes
-        {
-            loop {
-                println!("Named addresses for the move binary. Allows for an address to be put into the Move.toml or a placeholder `_`:");
-                let name_addresses_string = match read_line("Named addresses") {
-                    Ok(value) => value,
-                    Err(err) => {
-                        println!("{err:?}\n\nPlease try again\n");
-                        continue;
-                    }
-                };
-                match crate::common::utils::parse_map(name_addresses_string.trim()) {
-                    Ok(value) => break value,
-                    Err(err) => {
-                        println!("{err:?}\n\nPlease try again\n");
-                        continue;
-                    }
-                }
-            }
-        } else {
-            self.named_addresses.clone()
-        };
-
-        if !project_dir.exists() {
+        if !package_dir.exists() {
             if !self.prompt_options.assume_yes {
                 loop {
-                    println!(r#"Create a project at {project_dir:?} [Expected: yes | no ]"#);
+                    println!(
+                        r#"Create a package at {:?} [Expected: yes | no ]"#,
+                        if package_dir.is_absolute() || package_dir.starts_with(".") {
+                            package_dir.to_string_lossy().to_string()
+                        } else {
+                            format!("./{}", package_dir.to_string_lossy())
+                        }
+                    );
                     match read_line("Create")?.trim().to_lowercase().as_str() {
                         "yes" | "y" => break,
                         "no" | "n" => {
                             return Err(CliError::CommandArgumentError(
-                                "Canceling project creation".to_string(),
+                                "Canceling package creation".to_string(),
                             ))
                         }
                         _ => println!("Incorrect input. Please try again"),
                     }
                 }
             }
-            fs::create_dir_all(project_dir).map_err(|err| {
+            fs::create_dir_all(package_dir).map_err(|err| {
                 CliError::CommandArgumentError(format!(
-                    "Failed to create a directory {project_dir:?}.\n{err:?}"
+                    "Failed to create a directory {package_dir:?}.\n{err:?}"
                 ))
             })?;
         }
 
         InitPackage {
-            name: project_name.clone(),
+            name: package_name.clone(),
             package_dir: Some(self.package_dir.clone()),
-            named_addresses,
+            named_addresses: self.named_addresses,
             prompt_options: self.prompt_options,
             framework_package_args: self.framework_package_args,
         }
         .execute()
         .await?;
 
-        let move_module_path = project_dir.join(format!("sources/{project_name}.move"));
-        fs::write(&move_module_path, format!("module _::{project_name} {{}}")).map_err(|err| {
+        let move_module_path = package_dir.join(format!("sources/{package_name}.move"));
+        fs::write(&move_module_path, format!("module _::{package_name} {{}}")).map_err(|err| {
             CliError::UnexpectedError(format!(
                 "Failed to create a file with the module {move_module_path:?}.\n{err:?}"
             ))
         })?;
 
-        let tests_dir = project_dir.join("tests");
-        let move_module_path = tests_dir.join(format!("{project_name}_test.move"));
+        let tests_dir = package_dir.join("tests");
+        let move_module_path = tests_dir.join(format!("{package_name}_test.move"));
         fs::create_dir(&tests_dir).map_err(|err| {
             CliError::UnexpectedError(format!(
                 "Failed to create a directory for tests {tests_dir:?}.\n{err:?}"
@@ -424,7 +407,7 @@ impl CliCommand<()> for NewPackage {
         })?;
         fs::write(
             &move_module_path,
-            format!("#[test_only]\n\nmodule _::{project_name}_test {{}}"),
+            format!("#[test_only]\n\nmodule _::{package_name}_test {{}}"),
         )
         .map_err(|err| {
             CliError::UnexpectedError(format!(
