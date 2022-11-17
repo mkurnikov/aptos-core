@@ -35,7 +35,7 @@ pub enum Tool {
     Governance(governance::GovernanceTool),
     Info(InfoTool),
     Init(common::init::InitTool),
-    New(move_tool::NewPackage),
+    New(move_tool::cli_package_new::NewPackage),
     #[clap(subcommand)]
     Key(op::key::KeyTool),
     #[clap(subcommand)]
