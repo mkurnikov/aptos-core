@@ -489,7 +489,7 @@ impl EncodingType {
     }
 }
 
-#[derive(Clone, Debug, Parser)]
+#[derive(Clone, Debug, Parser, Default)]
 pub struct RngArgs {
     /// The seed used for key generation, should be a 64 character hex string and only used for testing
     ///
