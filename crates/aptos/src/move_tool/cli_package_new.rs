@@ -1,20 +1,21 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Formatter;
 use std::fs;
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::str::FromStr;
 
-use crate::common::init::Network;
 use anyhow::{anyhow, bail, ensure, Result};
-use aptos_logger::log;
 use async_trait::async_trait;
 use clap::Parser;
 use convert_case::{Case, Casing};
 use itertools::Itertools;
 use path_absolutize::Absolutize;
 use termcolor::{BufferWriter, Color, ColorChoice, ColorSpec, WriteColor};
+use walkdir::WalkDir;
+
+use crate::common::init::Network;
 
 use crate::common::types::{
     CliCommand, CliConfig, CliError, CliTypedResult, ConfigSearchMode, EncodingOptions,
@@ -29,7 +30,7 @@ use crate::move_tool::{FrameworkPackageArgs, InitPackage};
 /// $ aptos new my_package
 /// $ aptos new ~/demo/my_package2 --named_addresses self=_,std=0x1
 /// $ aptos new /tmp/my_package3 --name DemoPackage --assume-yes
-/// $ new /tmp/my_package --name ExampleProject --template-type 2 --assume-yes --skip-profile-creation
+/// $ aptos new /tmp/my_package --name ExampleProject --template-type 2 --assume-yes --skip-profile-creation
 #[derive(Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct NewPackage {
@@ -50,8 +51,8 @@ pub struct NewPackage {
 
     /// Creation Template:
     /// 1. Only `Move.toml`
-    /// 2. Empty package template
-    /// 3. Example with coins
+    /// 2. Empty package template: https://github.com/mkurnikov/aptos-templates.git
+    /// 3. Example with coins: @todo
     #[clap(long, display_order = 2, verbatim_doc_comment)]
     pub(crate) template_type: Option<TemplateType>,
 
@@ -90,28 +91,19 @@ impl CliCommand<()> for NewPackage {
 
         let package_name = self.package_name()?;
         println!("Package name: {}", fg_cyan(&package_name));
+        let package_lowercase_name = package_name.to_case(Case::Snake);
 
-        let template_type = self.template_type(package_dir, &package_name)?;
+        let template_type = self.template_type(package_dir, &package_lowercase_name)?;
         println!("Template type: {}", fg_cyan(&template_type.to_string()));
 
-        self.ask_create_package(&template_type, package_dir, &package_name);
+        self.ask_create_package(&template_type, package_dir, &package_lowercase_name);
 
         if matches!(template_type, TemplateType::ExampleWithCoin) {
             todo!("download from github")
         }
 
-        fs::create_dir_all(&package_dir)
+        fs::create_dir_all(package_dir)
             .map_err(|err| anyhow!("Failed to create a directory {package_dir:?}.\n{err}"))?;
-
-        InitPackage {
-            name: package_name.clone(),
-            package_dir: Some(package_dir.to_path_buf()),
-            named_addresses: self.named_addresses,
-            prompt_options: self.prompt_options,
-            framework_package_args: self.framework_package_args,
-        }
-        .execute()
-        .await?;
 
         println!(
             "Creating a {profile_name} profile for a package",
@@ -119,55 +111,32 @@ impl CliCommand<()> for NewPackage {
         );
 
         let profile_address_hex = if !self.skip_profile_creation {
-            std::env::set_current_dir(&package_dir).map_err(|err| anyhow!("{err}"))?;
-            crate::common::init::InitTool {
-                network: Some(Network::Devnet),
-                rest_url: None,
-                faucet_url: None,
-                skip_faucet: false,
-                rng_args: RngArgs::default(),
-                private_key_options: PrivateKeyInputOptions::default(),
-                profile_options: ProfileOptions::default(),
-                prompt_options: PromptOptions::yes(),
-                encoding_options: EncodingOptions::default(),
-            }
-            .execute()
-            .await?;
-
-            CliConfig::load_profile(Some("default"), ConfigSearchMode::CurrentDir)?
-                .ok_or_else(|| anyhow!("The config file could not be found .aptos/config.yaml"))?
-                .account
-                .ok_or_else(|| anyhow!("the address is not specified in the profile `default`"))?
-                .to_hex_literal()
+            self.aptos_init_profile_default(package_dir).await?
         } else {
             "_".to_string()
         };
 
         if matches!(template_type, TemplateType::OnlyMoveToml) {
-            return Ok(());
+            return self.aptos_move_init(&package_name, package_dir).await;
         }
 
-        TemplateType::creating_file_structure_for_empty_package(package_dir, &package_name)?;
-
-        let move_toml_path = package_dir.join("Move.toml");
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .append(true)
-            .open(&move_toml_path)
-            .map_err(|err| anyhow!("{move_toml_path:?} {err}"))?;
-        writeln!(
-            file,
-            "\n\
-                [addresses]\n\
-                self = {profile_address_hex:?}"
-        )
-        .map_err(|err| anyhow!("{move_toml_path:?} {err}"))?;
+        template_type.git_download()?;
+        template_type.copy_template_to(&package_dir, self.ask_type_language())?;
+        TemplateType::replace_values_in_the_template(
+            package_dir,
+            &[
+                ("package_name", &package_name),
+                ("package_lowercase_name", &package_lowercase_name),
+                ("default_address", &profile_address_hex),
+            ],
+        )?;
 
         Ok(())
     }
 }
 
 impl NewPackage {
+    #[inline]
     fn package_name(&self) -> Result<String> {
         let package_name = match &self.name {
             Some(name) => name.clone(),
@@ -193,6 +162,7 @@ impl NewPackage {
         Ok(package_name)
     }
 
+    #[inline]
     fn template_type(&self, package_dir: &Path, package_name: &str) -> Result<TemplateType> {
         if let Some(tp) = self.template_type {
             return Ok(tp);
@@ -218,6 +188,7 @@ impl NewPackage {
         Ok(tp)
     }
 
+    #[inline]
     fn ask_create_package(
         &self,
         template_type: &TemplateType,
@@ -233,6 +204,10 @@ impl NewPackage {
             "{}",
             template_type.structure_for_print(root_path, package_name)
         );
+        if template_type.url().is_some() {
+            println!("{} The template will be downloaded", fg_warning("*"));
+        }
+        println!();
         println!("To create, please press {}", fg_bold("Enter"));
         println!("To cancel, please press {}", fg_bold("CTRL+C"));
 
@@ -244,6 +219,83 @@ impl NewPackage {
             _ => {}
         }
         println!();
+    }
+
+    #[inline]
+    fn ask_type_language(&self) -> TemplateTypeVariants {
+        if self.prompt_options.assume_yes {
+            TemplateTypeVariants::MoveTs
+        } else {
+            println!(
+                "Want to add a `typescript aptos template`?\n\
+                Enter yes or no [Default: yes]:"
+            );
+
+            loop {
+                let result = match read_line("typescript") {
+                    Ok(s) => s,
+                    Err(err) => {
+                        println!("{err}");
+                        continue;
+                    }
+                };
+                match result.to_lowercase().trim() {
+                    "" | "y" | "yes" => break TemplateTypeVariants::MoveTs,
+                    "n" | "no" => break TemplateTypeVariants::Move,
+                    _ => {
+                        println!(
+                            "Please enter {yes} or {no}",
+                            yes = fg_bold("yes"),
+                            no = fg_bold("no")
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /// $ aptos move init
+    #[inline]
+    async fn aptos_move_init(
+        &self,
+        package_name: &String,
+        package_dir: &Path,
+    ) -> Result<(), CliError> {
+        InitPackage {
+            name: package_name.clone(),
+            package_dir: Some(package_dir.to_path_buf()),
+            named_addresses: self.named_addresses.clone(),
+            prompt_options: self.prompt_options,
+            framework_package_args: self.framework_package_args.clone(),
+        }
+        .execute()
+        .await
+    }
+
+    /// $ aptos init
+    #[inline]
+    async fn aptos_init_profile_default(&self, package_dir: &Path) -> Result<String, CliError> {
+        std::env::set_current_dir(&package_dir).map_err(|err| anyhow!("{err}"))?;
+        crate::common::init::InitTool {
+            network: Some(Network::Devnet),
+            rest_url: None,
+            faucet_url: None,
+            skip_faucet: false,
+            rng_args: RngArgs::default(),
+            private_key_options: PrivateKeyInputOptions::default(),
+            profile_options: ProfileOptions::default(),
+            prompt_options: PromptOptions::yes(),
+            encoding_options: EncodingOptions::default(),
+        }
+        .execute()
+        .await?;
+
+        let address_hex = CliConfig::load_profile(Some("default"), ConfigSearchMode::CurrentDir)?
+            .ok_or_else(|| anyhow!("The config file could not be found .aptos/config.yaml"))?
+            .account
+            .ok_or_else(|| anyhow!("the address is not specified in the profile `default`"))?
+            .to_hex_literal();
+        Ok(address_hex)
     }
 }
 
@@ -299,9 +351,9 @@ impl FromStr for PackageDir {
 
 #[derive(Copy, Clone)]
 pub enum TemplateType {
-    OnlyMoveToml,
-    EmptyPackage,
-    ExampleWithCoin,
+    OnlyMoveToml = 1,
+    EmptyPackage = 2,
+    ExampleWithCoin = 3,
 }
 
 impl TemplateType {
@@ -323,45 +375,93 @@ impl TemplateType {
                     │ └─ {source_file}\n\
                     ├─📂 {tests}\n\
                     │ └─ {test_file}\n\
-                    └─ {move_toml}",
+                    └─ {move_toml}\n\
+                    \n\
+                    GitHub: {url}",
                     sources = fg_italic("sources"),
                     source_file = fg_italic(&format!("{package_name}.move")),
                     tests = fg_italic("tests"),
-                    test_file = fg_italic(&format!("{package_name}_tests.move"))
+                    test_file = fg_italic(&format!("{package_name}_tests.move")),
+                    url = TemplateType::EmptyPackage.url().unwrap_or_default()
                 )
             }
-            TemplateType::ExampleWithCoin => format!("@todo"),
+            TemplateType::ExampleWithCoin => format!(
+                "@todo\n\
+                    \n\
+                GitHub: @todo"
+            ),
         }
     }
 
-    fn creating_file_structure_for_empty_package(
+    fn git_template_path(&self) -> PathBuf {
+        std::env::temp_dir().join(format!("aptos_template_{}", *self as u8))
+    }
+
+    fn git_download(&self) -> anyhow::Result<PathBuf> {
+        let url = self.url().unwrap_or_else(|| unreachable!());
+
+        let tmp_dir = self.git_template_path();
+        if !tmp_dir.exists() {
+            println!("Download: {url}");
+            git2::Repository::clone(&url, &tmp_dir)?;
+        }
+
+        Ok(tmp_dir)
+    }
+
+    fn copy_template_to(&self, to: &Path, ctp: TemplateTypeVariants) -> Result<()> {
+        let template_path = self.git_template_path();
+        let mut from = match ctp {
+            TemplateTypeVariants::Move => template_path.join("_default"),
+            TemplateTypeVariants::MoveTs => template_path.join("_typescript"),
+        };
+
+        if !from.exists() {
+            from = template_path;
+        }
+
+        cp_r(&from, to)
+    }
+
+    fn replace_values_in_the_template(
         package_dir: &Path,
-        package_name: &str,
+        values: &[(&str, &String)],
     ) -> Result<()> {
-        let move_module_path = package_dir.join(format!("sources/{package_name}.move"));
-        fs::write(
-            &move_module_path,
-            format!("module self::{package_name} {{}}"),
-        )
-        .map_err(|err| {
-            anyhow!("Failed to create a file with the module {move_module_path:?}.\n{err:?}")
-        })?;
+        let hash_map: HashMap<&str, &String> = values.iter().cloned().collect();
+        for path in WalkDir::new(package_dir)
+            .into_iter()
+            .filter_map(|path| path.ok())
+            .map(|path| path.into_path())
+            .skip(1)
+        {
+            path_processing_30("Processing: ", &path, "");
+            if path.is_file() {
+                let content = fs::read_to_string(&path)?;
+                let new_content = str_replace_position(&content, &hash_map);
+                if content != new_content {
+                    fs::write(&path, new_content)?;
+                }
+            }
 
-        let tests_dir = package_dir.join("tests");
-        let move_module_path = tests_dir.join(format!("{package_name}_test.move"));
-        fs::create_dir(&tests_dir).map_err(|err| {
-            anyhow!("Failed to create a directory for tests {tests_dir:?}.\n{err:?}")
-        })?;
-
-        fs::write(
-            &move_module_path,
-            format!("#[test_only]\n\nmodule self::{package_name}_test {{}}"),
-        )
-        .map_err(|err| {
-            anyhow!("Failed to create a file with test {move_module_path:?}.\n{err:?}")
-        })?;
+            let from_path = path.to_string_lossy().to_string();
+            let to_path = str_replace_position(&from_path, &hash_map);
+            if from_path != to_path {
+                fs::rename(&from_path, to_path)?;
+            }
+        }
+        println!("\rThe data is inserted into the template{}", " ".repeat(30));
 
         Ok(())
+    }
+
+    fn url(&self) -> Option<String> {
+        match self {
+            TemplateType::OnlyMoveToml => None,
+            TemplateType::EmptyPackage => {
+                Some("https://github.com/mkurnikov/aptos-templates.git".to_string())
+            }
+            TemplateType::ExampleWithCoin => todo!(),
+        }
     }
 }
 
@@ -391,6 +491,11 @@ impl std::fmt::Display for TemplateType {
     }
 }
 
+enum TemplateTypeVariants {
+    Move,
+    MoveTs,
+}
+
 // ===
 
 #[inline]
@@ -406,7 +511,7 @@ fn print_description_of_templates(package_dir: &Path, package_name: &str) {
     .enumerate()
     {
         println!(
-            "{num} {name}\n{structure}",
+            "{num} {name}\n{structure}\n",
             num = fg_cyan(&format!("{}.", num + 1)),
             name = fg_bold(&tp.to_string()),
             structure = tp
@@ -416,6 +521,76 @@ fn print_description_of_templates(package_dir: &Path, package_name: &str) {
                 .join("\n"),
         );
     }
+}
+
+fn cp_r(from: &Path, to: &Path) -> anyhow::Result<()> {
+    for copy_from in WalkDir::new(from)
+        .into_iter()
+        .filter_map(|path| path.ok())
+        .map(|path| path.into_path())
+        .skip(1)
+    {
+        path_processing_30("Copying: ", &copy_from, "");
+        let copy_to = to.join(
+            copy_from
+                .to_string_lossy()
+                .trim_start_matches(&from.to_string_lossy().to_string())
+                .trim_start_matches("/"),
+        );
+
+        if copy_from.is_file() {
+            fs::copy(copy_from, copy_to)?;
+        } else if copy_from.is_dir() {
+            fs::create_dir(copy_to)?;
+        }
+    }
+    println!("\rCopying completed{}", " ".repeat(30));
+    Ok(())
+}
+
+fn str_to_insert_position(text: &str) -> Vec<(&str, &str)> {
+    let mut cur = 0;
+    let mut result = Vec::new();
+
+    let mut position;
+    let mut position_index;
+
+    while let Some(mut start_pos) = text[cur..].find("{{") {
+        start_pos += cur;
+        cur = start_pos;
+
+        let end_pos = match text[start_pos..].find("}}") {
+            None => continue,
+            Some(pos) => start_pos + pos + 2,
+        };
+        cur = end_pos;
+
+        position = &text[start_pos..end_pos];
+        position_index = position.trim().trim_matches('{').trim_matches('}').trim();
+        result.push((position_index, position));
+    }
+
+    result
+}
+
+fn str_replace_position(text: &str, key_value: &HashMap<&str, &String>) -> String {
+    let mut result = text.to_string();
+    for (key, position_str) in str_to_insert_position(text) {
+        if let Some(value) = key_value.get(key) {
+            result = result.replace(position_str, value);
+        }
+    }
+    result
+}
+
+fn path_processing_30(pref: &str, path: &Path, suff: &str) {
+    let path_str = path.to_string_lossy();
+    let path_print = if path_str.len() > 30 {
+        format!("..{}", &path_str[path_str.len() - 28..])
+    } else {
+        path_str.to_string()
+    };
+    print!("\r{}{:<30}{}", pref, path_print, suff);
 }
 
 // ===
@@ -450,4 +625,21 @@ fn style_text(text: &str, color: ColorSpec) -> anyhow::Result<String> {
     write!(&mut buffer, "{text}")?;
     buffer.reset()?;
     Ok(String::from_utf8(buffer.into_inner())?)
+}
+
+#[cfg(test)]
+mod test {
+    use crate::move_tool::cli_package_new::str_to_insert_position;
+
+    #[test]
+    fn test_str_to_insert_position() {
+        assert_eq!(
+            vec![
+                ("123", "{{123}}"),
+                ("456", "{{ 456 }}"),
+                ("789", "{{{789}}"),
+            ],
+            str_to_insert_position("{{123}}{{ 456 }}{{{789}}}")
+        );
+    }
 }
