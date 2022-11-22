@@ -117,6 +117,8 @@ impl CliCommand<()> for NewPackage {
         };
 
         if matches!(template_type, TemplateType::OnlyMoveToml) {
+            let tests_path = package_dir.join("tests");
+            fs::create_dir(&tests_path).map_err(|err| anyhow!("{err}. Path: {tests_path:?}"))?;
             return self.aptos_move_init(&package_name, package_dir).await;
         }
 
@@ -360,27 +362,30 @@ impl TemplateType {
     fn structure_for_print(&self, package_dir: &Path, package_name: &str) -> String {
         let package_dir_italic = fg_italic(&package_dir.to_string_lossy().to_string());
         let move_toml = fg_italic("Move.toml");
+        let sources = fg_italic("sources");
+        let tests = fg_italic("tests");
+        let space = "\u{a0}\u{a0}";
 
         match self {
             TemplateType::OnlyMoveToml => {
                 format!(
-                    "📂 {package_dir_italic}\n\
-                    └─ {move_toml}"
+                    "{package_dir_italic}\n\
+                    {space}├─ {sources}\n\
+                    {space}├─ {tests}\n\
+                    {space}└─ {move_toml}",
                 )
             }
             TemplateType::EmptyPackage => {
                 format!(
-                    "📂 {package_dir_italic}\n\
-                    ├─📂 {sources}\n\
-                    │ └─ {source_file}\n\
-                    ├─📂 {tests}\n\
-                    │ └─ {test_file}\n\
-                    └─ {move_toml}\n\
+                    "{package_dir_italic}\n\
+                    {space}├─ {sources}\n\
+                    {space}│   └─ {source_file}\n\
+                    {space}├─ {tests}\n\
+                    {space}│   └─ {test_file}\n\
+                    {space}└─ {move_toml}\n\
                     \n\
                     GitHub: {url}",
-                    sources = fg_italic("sources"),
                     source_file = fg_italic(&format!("{package_name}.move")),
-                    tests = fg_italic("tests"),
                     test_file = fg_italic(&format!("{package_name}_tests.move")),
                     url = TemplateType::EmptyPackage.url().unwrap_or_default()
                 )
@@ -482,7 +487,7 @@ impl FromStr for TemplateType {
 impl std::fmt::Display for TemplateType {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let as_string = match self {
-            TemplateType::OnlyMoveToml => "Only `Move.toml`",
+            TemplateType::OnlyMoveToml => "Empty package",
             TemplateType::EmptyPackage => "Empty package template",
             TemplateType::ExampleWithCoin => "Example with coins",
         }
