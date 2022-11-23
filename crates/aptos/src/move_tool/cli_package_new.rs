@@ -369,7 +369,7 @@ impl GitTemplate<'_> {
                 ("default_address", profile_address_hex),
             ],
         )?;
-        todo!()
+        Ok(())
     }
 }
 // ===
