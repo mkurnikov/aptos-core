@@ -30,7 +30,7 @@ const GIT_TEMPLATE: &str = "https://github.com/mkurnikov/aptos-templates.git";
 /// $ aptos new my_package
 /// $ aptos new ~/demo/my_package2 --named_addresses self=_,std=0x1
 /// $ aptos new /tmp/my_package3 --name DemoPackage --assume-yes
-/// $ aptos new /tmp/my_package --name ExampleProject --script --coin --assume-yes --skip-profile-creation
+/// $ aptos new /tmp/my_package --name ExampleProject --example-script true --example-coin true --assume-yes --skip-profile-creation
 #[derive(Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct NewPackage {
@@ -54,7 +54,7 @@ pub struct NewPackage {
     pub(crate) example_script: Option<bool>,
 
     /// Add an example with coins to the package
-    #[clap(long, display_order = 3)]
+    #[clap(long, display_order = 2)]
     pub(crate) example_coin: Option<bool>,
 
     /// Do not create a "default" profile
