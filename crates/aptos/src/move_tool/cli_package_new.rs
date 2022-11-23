@@ -55,12 +55,12 @@ pub struct NewPackage {
     pub(crate) add_js: Option<bool>,
 
     /// Add an example with coins to the package
-    #[clap(long, display_order = 2)]
+    #[clap(long, display_order = 3)]
     pub(crate) add_coin: Option<bool>,
 
     /// Do not create a "default" profile
     #[clap(long, display_order = 4)]
-    pub(crate) skip_profile_creation: bool,
+    pub(crate) create_profile: Option<bool>,
 
     #[clap(flatten)]
     pub(crate) framework_package_args: FrameworkPackageArgs,
@@ -93,113 +93,92 @@ impl CliCommand<()> for NewPackage {
         fs::create_dir_all(package_dir)
             .map_err(|err| anyhow!("Failed to create a directory {package_dir:?}.\n{err}"))?;
 
+        let profile_address_hex = if run_aptos_init {
+            self.aptos_init_profile_default(package_dir).await?
+        } else {
+            "_".to_string()
+        };
+
         // if coin module is requested, then all the necessary directories will be created with that
         if !add_coin_module {
             self.init_move_dir(package_dir, &package_name).await?;
             fs::create_dir(package_dir.join("tests"))
                 .map_err(|err| CliError::UnexpectedError(err.to_string()))?;
+
+            // fail fast if no need for any templates
+            if !add_dapp {
+                return Ok(());
+            }
         }
 
-        if run_aptos_init {
-            // TODO: run aptos init
-        }
-
-        // fail fast if no need for any templates
-        if !add_coin_module && !add_dapp {
-            return Ok(());
-        }
-
+        // git template
         let templates_root_path = git_download_aptos_templates()?;
-        let tera_coin_module = Tera::new(&format!(
-            "{}/_coin/**/*",
-            templates_root_path.to_string_lossy()
-        ))
-        .map_err(|_| CliError::UnexpectedError("tera error".to_string()))?;
+        let package_lowercase_name = package_name.to_case(Case::Snake);
+        let tera_context = Context::from_serialize(
+            [
+                ("package_name".to_string(), package_name),
+                ("package_lowercase_name".to_string(), package_lowercase_name),
+                ("default_address".to_string(), profile_address_hex.clone()),
+                ("address".to_string(), profile_address_hex),
+            ]
+            .into_iter()
+            .collect::<HashMap<String, String>>(),
+        )
+        .map_err(|err| anyhow!("Tera context: {err}"))?;
 
-        // TODO: use Tera with context to render _coin/ directory, it should be rendered on top of empty directory,
-        // as
-        //         if !add_coin_module {
-        //             self.init_move_dir(package_dir, &package_name).await?;
-        //             fs::create_dir(package_dir.join("tests"))
-        //                 .map_err(|err| CliError::UnexpectedError(err.to_string()))?;
-        //         }
-        // now runs only without _coin/ added
+        if add_coin_module {
+            let tera_coin_module = Tera::new(&format!(
+                "{}/_coin/**/*",
+                templates_root_path.to_string_lossy()
+            ))
+            .map_err(|_| CliError::UnexpectedError("tera error".to_string()))?;
 
-        // let mut context = Context::new();
-        // context.insert("package_name", &package_name);
+            for (from, to, subpath) in
+                walk_dir_for_tera(&templates_root_path.join("_coin"), package_dir)
+            {
+                if to.exists() {
+                    continue;
+                }
 
-        // TODO: try to use camel_case_to_lower_case filter in Tera context, instead of pre-defining variable
+                if from.is_dir() {
+                    fs::create_dir(to).map_err(|err| anyhow!("Create dir: {err}. {from:?}"))?;
+                    continue;
+                }
 
-        // TODO: remove GitTemplate struct, no need for the deep structures. Do everything here, we will refactor later.
+                let r = tera_coin_module
+                    .render(&subpath, &tera_context)
+                    .map_err(|err| anyhow!("Tera render: {err}. {subpath}"))?;
+                fs::write(to, r).map_err(|err| anyhow!("{err}. {subpath}"))?;
+            }
+        }
 
-        // TODO: if add_js { add_js_app }, doesn't matter if 
-        // let GitTemplate {
-        //     package_name,
-        //     profile_address_hex,
-        //     add_coin_module: coin,
-        //     add_dapp: script,
-        //     package_dir,
-        // } = self;
-        // let package_lowercase_name = package_name.to_case(Case::Snake);
+        if add_dapp {
+            let tera_coin_module = Tera::new(&format!(
+                "{}/_typescript/**/*",
+                templates_root_path.to_string_lossy()
+            ))
+            .map_err(|_| CliError::UnexpectedError("tera error".to_string()))?;
 
-        // copy_path_recursive(
-        //     &templates_root_path.join("_default/sources/"),
-        //     &package_dir.join("sources"),
-        // )?;
-        // copy_path_recursive(
-        //     &templates_root_path.join("_default/tests/"),
-        //     &package_dir.join("tests"),
-        // )?;
+            for (from, to, subpath) in
+                walk_dir_for_tera(&templates_root_path.join("_typescript"), package_dir)
+            {
+                if to.exists() {
+                    continue;
+                }
 
-        // let move_toml_path = package_dir.join("Move.toml");
-        // let mut move_toml = fs::read_to_string(&move_toml_path).map_err(|err| anyhow!("{err}"))?;
-        // if !move_toml.contains("aptos-move/framework/aptos-framework") {
-        //     move_toml += "\n\n[dependencies.AptosFramework]
-        //         git = \"https://github.com/aptos-labs/aptos-core.git\"
-        //         rev = \"main\"
-        //         subdir = \"aptos-move/framework/aptos-framework\"\n";
-        // }
+                if from.is_dir() {
+                    fs::create_dir(to).map_err(|err| anyhow!("Create dir: {err}. {from:?}"))?;
+                    continue;
+                }
 
-        // if *coin {
-        //     copy_path_recursive(
-        //         &templates_root_path.join("_coin/sources/"),
-        //         &package_dir.join("sources"),
-        //     )?;
-        //     copy_path_recursive(
-        //         &templates_root_path.join("_coin/tests/"),
-        //         &package_dir.join("tests"),
-        //     )?;
-        // }
+                let r = tera_coin_module
+                    .render(&subpath, &tera_context)
+                    .map_err(|err| anyhow!("Tera render: {err}. {subpath}"))?;
+                fs::write(to, r).map_err(|err| anyhow!("{err}. {subpath}"))?;
+            }
+        }
 
-        // if *script {
-        //     let js_path = &package_dir.join("js");
-        //     fs::create_dir(js_path).map_err(|err| anyhow!("{err}"))?;
-        //     copy_path_recursive(&templates_root_path.join("_typescript/js/"), js_path)?;
-        // }
-
-        // fs::write(move_toml_path, move_toml).map_err(|err| anyhow!("{err}"))?;
-
-        // replace_values_in_the_template(
-        //     package_dir,
-        //     &[
-        //         ("package_name", package_name),
-        //         ("package_lowercase_name", &package_lowercase_name),
-        //         ("default_address", profile_address_hex),
-        //     ],
-        // )?;
         Ok(())
-
-        // // Examples from the template
-        // GitTemplate {
-        //     package_name,
-        //     profile_address_hex,
-        //     add_coin_module,
-        //     add_dapp,
-        //     package_dir,
-        // }
-        // .copy_from_git_template()?;
-        //
-        // Ok(())
     }
 }
 
@@ -211,7 +190,7 @@ impl NewPackage {
             None => {
                 let default_name = self.package_dir.to_package_name();
 
-                print!("\nEnter the package name [default: {default_name}]: ");
+                println!("\nEnter the package name [default: {default_name}]: ");
                 let package_name = read_line("Package name")?.trim().to_string();
                 println!();
 
@@ -246,26 +225,12 @@ impl NewPackage {
 
     #[inline]
     fn ask_run_aptos_init(&self) -> bool {
-        ask_yes_no("Configure Aptos account? ", false)
+        if let Some(value) = self.create_profile {
+            value
+        } else {
+            ask_yes_no("Configure Aptos account? ", false)
+        }
     }
-
-    // #[inline]
-    // async fn empty_package(
-    //     &self,
-    //     package_dir: &Path,
-    //     package_name: &str,
-    // ) -> anyhow::Result<()> {
-    //     println!(
-    //         "Creating a package directory {}",
-    //         package_dir.to_string_lossy().to_string().as_str()
-    //     );
-    //     fs::create_dir_all(package_dir)
-    //         .map_err(|err| anyhow!("Failed to create a directory {package_dir:?}.\n{err}"))?;
-    //     // creates default Move.toml, sources/
-    //     self.init_move_dir(package_dir, package_name)?;
-    //     fs::create_dir(package_dir.join("tests"))?;
-    //     Ok(())
-    // }
 
     /// $ aptos move init
     #[inline]
@@ -282,10 +247,6 @@ impl NewPackage {
     /// $ aptos init --profile default
     #[inline]
     async fn aptos_init_profile_default(&self, package_dir: &Path) -> anyhow::Result<String> {
-        if self.skip_profile_creation {
-            return Ok("_".to_string());
-        }
-
         println!(
             "Creating a {profile_name} profile for a package",
             profile_name = "`default`"
@@ -364,93 +325,30 @@ impl FromStr for PackageDir {
 
 // ===
 
-struct GitTemplate<'a> {
-    package_name: String,
-    profile_address_hex: String,
-    add_coin_module: bool,
-    add_dapp: bool,
-    package_dir: &'a Path,
+fn walk_dir_for_tera<'a>(
+    from_dir: &'a Path,
+    to_dir: &'a Path,
+) -> impl Iterator<Item = (PathBuf, PathBuf, String)> + 'a {
+    let from_str = from_dir.to_string_lossy().to_string();
+
+    WalkDir::new(from_dir)
+        .into_iter()
+        .filter_map(|path| path.ok())
+        .map(|path| path.into_path())
+        .skip(1)
+        .map(move |path| {
+            let sub = path
+                .to_string_lossy()
+                .to_string()
+                .trim_start_matches(&from_str)
+                .trim_matches('/')
+                .to_string();
+            (path, to_dir.join(&sub), sub)
+        })
 }
-
-impl GitTemplate<'_> {
-    fn copy_from_git_template(&self) -> anyhow::Result<()> {
-        let template_path = git_download_aptos_templates()?;
-
-        let GitTemplate {
-            package_name,
-            profile_address_hex,
-            add_coin_module: coin,
-            add_dapp: script,
-            package_dir,
-        } = self;
-        let package_lowercase_name = package_name.to_case(Case::Snake);
-
-        copy_path_recursive(
-            &template_path.join("_default/sources/"),
-            &package_dir.join("sources"),
-        )?;
-        copy_path_recursive(
-            &template_path.join("_default/tests/"),
-            &package_dir.join("tests"),
-        )?;
-
-        let move_toml_path = package_dir.join("Move.toml");
-        let mut move_toml = fs::read_to_string(&move_toml_path).map_err(|err| anyhow!("{err}"))?;
-        if !move_toml.contains("aptos-move/framework/aptos-framework") {
-            move_toml += "\n\n[dependencies.AptosFramework]
-                git = \"https://github.com/aptos-labs/aptos-core.git\"
-                rev = \"main\"
-                subdir = \"aptos-move/framework/aptos-framework\"\n";
-        }
-
-        if *coin {
-            copy_path_recursive(
-                &template_path.join("_coin/sources/"),
-                &package_dir.join("sources"),
-            )?;
-            copy_path_recursive(
-                &template_path.join("_coin/tests/"),
-                &package_dir.join("tests"),
-            )?;
-
-            if let Some(pos) = move_toml.find("[addresses]") {
-                move_toml.insert_str(
-                    pos + 11,
-                    &format!("\ncoin_address = \"{profile_address_hex}\"\n"),
-                );
-            } else {
-                move_toml += &format!(
-                    "
-            
-                    [addresses]
-                    coin_address = \"{profile_address_hex}\""
-                );
-            }
-        }
-
-        if *script {
-            let js_path = &package_dir.join("js");
-            fs::create_dir(js_path).map_err(|err| anyhow!("{err}"))?;
-            copy_path_recursive(&template_path.join("_typescript/js/"), js_path)?;
-        }
-
-        fs::write(move_toml_path, move_toml).map_err(|err| anyhow!("{err}"))?;
-
-        replace_values_in_the_template(
-            package_dir,
-            &[
-                ("package_name", package_name),
-                ("package_lowercase_name", &package_lowercase_name),
-                ("default_address", profile_address_hex),
-            ],
-        )?;
-        Ok(())
-    }
-}
-// ===
 
 fn ask_yes_no(text: &str, default: bool) -> bool {
-    print!("{text}[{}]", if default { "Y/n" } else { "y/N" });
+    println!("{text}[{}]", if default { "Y/n" } else { "y/N" });
     let result = loop {
         let insert_text = match read_line("yes_no") {
             Ok(result) => result,
@@ -480,143 +378,4 @@ fn git_download_aptos_templates() -> anyhow::Result<PathBuf> {
     }
 
     Ok(tmp_dir)
-}
-
-fn replace_values_in_the_template(
-    package_dir: &Path,
-    values: &[(&str, &String)],
-) -> anyhow::Result<()> {
-    let hash_map: HashMap<&str, &String> = values.iter().cloned().collect();
-    for path in WalkDir::new(package_dir)
-        .into_iter()
-        .filter_map(|path| path.ok())
-        .map(|path| path.into_path())
-        .skip(1)
-    {
-        path_processing_30("Processing: ", &path, "");
-        if path.is_file() {
-            let content = fs::read_to_string(&path)?;
-            let new_content = str_replace_position(&content, &hash_map);
-            if content != new_content {
-                fs::write(&path, new_content)?;
-            }
-        }
-
-        let from_path = path.to_string_lossy().to_string();
-        let to_path = str_replace_position(&from_path, &hash_map);
-        if from_path != to_path {
-            fs::rename(&from_path, to_path)?;
-        }
-    }
-    println!("\rThe data is inserted into the template{}", " ".repeat(30));
-
-    Ok(())
-}
-
-fn copy_path_recursive(from: &Path, to: &Path) -> anyhow::Result<()> {
-    for copy_from in WalkDir::new(from)
-        .into_iter()
-        .filter_map(|path| path.ok())
-        .map(|path| path.into_path())
-        .skip(1)
-    {
-        path_processing_30("Copying: ", &copy_from, "");
-        let copy_to = to.join(
-            copy_from
-                .to_string_lossy()
-                .trim_start_matches(&from.to_string_lossy().to_string())
-                .trim_start_matches('/'),
-        );
-
-        if copy_from.is_file() {
-            fs::copy(copy_from, copy_to)?;
-        } else if copy_from.is_dir() {
-            fs::create_dir(copy_to)?;
-        }
-    }
-    print!("\r");
-    Ok(())
-}
-
-fn str_to_insert_position(text: &str) -> Vec<(&str, &str)> {
-    let mut cur = 0;
-    let mut result = Vec::new();
-
-    let mut position;
-    let mut position_index;
-
-    while let Some(mut start_pos) = text[cur..].find("{{") {
-        start_pos += cur;
-        cur = start_pos;
-
-        let end_pos = match text[start_pos..].find("}}") {
-            None => continue,
-            Some(pos) => start_pos + pos + 2,
-        };
-        cur = end_pos;
-
-        position = &text[start_pos..end_pos];
-        position_index = position.trim().trim_matches('{').trim_matches('}').trim();
-        result.push((position_index, position));
-    }
-
-    result
-}
-
-fn str_replace_position(text: &str, key_value: &HashMap<&str, &String>) -> String {
-    let mut result = text.to_string();
-    for (key, position_str) in str_to_insert_position(text) {
-        if let Some(value) = key_value.get(key) {
-            result = result.replace(position_str, value);
-        }
-    }
-    result
-}
-
-fn path_processing_30(pref: &str, path: &Path, suff: &str) {
-    let path_str = path.to_string_lossy();
-    let path_print = if path_str.len() > 30 {
-        format!("..{}", &path_str[path_str.len() - 28..])
-    } else {
-        path_str.to_string()
-    };
-    print!("\r{}{:<30}{}", pref, path_print, suff);
-}
-
-// ===
-
-fn fg_bold(text: &str) -> String {
-    style_text(text, ColorSpec::new().set_bold(true).to_owned())
-        .unwrap_or_else(|_| text.to_string())
-}
-
-fn fg_cyan(text: &str) -> String {
-    style_text(text, ColorSpec::new().set_fg(Some(Color::Cyan)).to_owned())
-        .unwrap_or_else(|_| text.to_string())
-}
-
-fn style_text(text: &str, color: ColorSpec) -> anyhow::Result<String> {
-    let buffer_writer = BufferWriter::stderr(ColorChoice::Always);
-    let mut buffer = buffer_writer.buffer();
-    buffer.set_color(&color)?;
-    write!(&mut buffer, "{text}")?;
-    buffer.reset()?;
-    Ok(String::from_utf8(buffer.into_inner())?)
-}
-
-#[cfg(test)]
-mod test {
-    use crate::move_tool::cli_package_new::str_to_insert_position;
-
-    #[test]
-    fn test_str_to_insert_position() {
-        assert_eq!(
-            vec![
-                ("123", "{{123}}"),
-                ("456", "{{ 456 }}"),
-                ("789", "{{{789}}"),
-            ],
-            str_to_insert_position("{{123}}{{ 456 }}{{{789}}}")
-        );
-    }
 }
