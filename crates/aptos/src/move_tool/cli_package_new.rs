@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{anyhow, ensure};
 use async_trait::async_trait;
 use clap::Parser;
 use convert_case::{Case, Casing};
@@ -30,7 +30,7 @@ const GIT_TEMPLATE: &str = "https://github.com/mkurnikov/aptos-templates.git";
 /// $ aptos new my_package
 /// $ aptos new ~/demo/my_package2 --named_addresses self=_,std=0x1
 /// $ aptos new /tmp/my_package3 --name DemoPackage --assume-yes
-/// $ aptos new /tmp/my_package --name ExampleProject --template-type 2 --assume-yes --skip-profile-creation
+/// $ aptos new /tmp/my_package --name ExampleProject --script --coin --assume-yes --skip-profile-creation
 #[derive(Parser)]
 #[clap(verbatim_doc_comment)]
 pub struct NewPackage {
@@ -49,12 +49,12 @@ pub struct NewPackage {
     #[clap(long, display_order = 1)]
     pub(crate) name: Option<String>,
 
-    /// @todo
-    #[clap(long = "script", display_order = 2)]
+    /// Add an example with dApp to the package
+    #[clap(long, display_order = 2)]
     pub(crate) example_script: Option<bool>,
 
-    /// @todo
-    #[clap(long = "coin", display_order = 3)]
+    /// Add an example with coins to the package
+    #[clap(long, display_order = 3)]
     pub(crate) example_coin: Option<bool>,
 
     /// Do not create a "default" profile
@@ -87,11 +87,10 @@ impl CliCommand<()> for NewPackage {
         let package_dir = self.package_dir.as_ref();
         println!(
             "The project will be created in the directory: {}",
-            fg_cyan(&package_dir.to_string_lossy().to_string())
+            fg_cyan(&package_dir.to_string_lossy())
         );
 
         let package_name = self.package_name()?;
-        let package_lowercase_name = package_name.to_case(Case::Snake);
         println!("Package name: {}", fg_cyan(&package_name));
 
         let profile_address_hex = self.empty_package(package_dir, &package_name).await?;
@@ -103,67 +102,15 @@ impl CliCommand<()> for NewPackage {
             return Ok(());
         }
 
-        let template_path = git_download_template()?;
-
-        cp_r(
-            &template_path.join("_default/sources/"),
-            &package_dir.join("sources"),
-        )?;
-        cp_r(
-            &template_path.join("_default/tests/"),
-            &package_dir.join("tests"),
-        )?;
-
-        let move_toml_path = package_dir.join("Move.toml");
-        let mut move_toml = fs::read_to_string(&move_toml_path).map_err(|err| anyhow!("{err}"))?;
-        if !move_toml.contains("aptos-move/framework/aptos-framework") {
-            move_toml += "\n\n[dependencies.AptosFramework]
-                git = \"https://github.com/aptos-labs/aptos-core.git\"
-                rev = \"main\"
-                subdir = \"aptos-move/framework/aptos-framework\"\n";
-        }
-
-        if coin {
-            cp_r(
-                &template_path.join("_coin/sources/"),
-                &package_dir.join("sources"),
-            )?;
-            cp_r(
-                &template_path.join("_coin/tests/"),
-                &package_dir.join("tests"),
-            )?;
-
-            if let Some(pos) = move_toml.find("[addresses]") {
-                move_toml.insert_str(
-                    pos + 11,
-                    &format!("\ncoin_address = \"{profile_address_hex}\"\n"),
-                );
-            } else {
-                move_toml += &format!(
-                    "
-            
-                    [addresses]
-                    coin_address = \"{profile_address_hex}\""
-                );
-            }
-        }
-
-        if script {
-            let js_path = &package_dir.join("js");
-            fs::create_dir(js_path).map_err(|err| anyhow!("{err}"))?;
-            cp_r(&template_path.join("_typescript/js/"), &js_path)?;
-        }
-
-        fs::write(move_toml_path, move_toml).map_err(|err| anyhow!("{err}"))?;
-
-        replace_values_in_the_template(
+        // Examples from the template
+        GitTemplate {
+            package_name,
+            profile_address_hex,
+            coin,
+            script,
             package_dir,
-            &[
-                ("package_name", &package_name),
-                ("package_lowercase_name", &package_lowercase_name),
-                ("default_address", &profile_address_hex),
-            ],
-        )?;
+        }
+        .copy_from_git_template()?;
 
         Ok(())
     }
@@ -171,7 +118,7 @@ impl CliCommand<()> for NewPackage {
 
 impl NewPackage {
     #[inline]
-    fn package_name(&self) -> Result<String> {
+    fn package_name(&self) -> anyhow::Result<String> {
         let package_name = match &self.name {
             Some(name) => name.clone(),
             None => {
@@ -223,7 +170,11 @@ impl NewPackage {
     }
 
     #[inline]
-    async fn empty_package(&self, package_dir: &Path, package_name: &str) -> Result<String> {
+    async fn empty_package(
+        &self,
+        package_dir: &Path,
+        package_name: &str,
+    ) -> anyhow::Result<String> {
         println!(
             "Creating a package directory {}",
             fg_cyan(package_dir.to_string_lossy().to_string().as_str())
@@ -253,7 +204,7 @@ impl NewPackage {
         Ok(())
     }
 
-    /// $ aptos init
+    /// $ aptos init --profile default
     #[inline]
     async fn aptos_init_profile_default(&self, package_dir: &Path) -> anyhow::Result<String> {
         if self.skip_profile_creation {
@@ -308,9 +259,9 @@ impl AsRef<Path> for PackageDir {
     }
 }
 
-impl Into<PathBuf> for PackageDir {
-    fn into(self) -> PathBuf {
-        self.0
+impl From<PackageDir> for PathBuf {
+    fn from(value: PackageDir) -> PathBuf {
+        value.0
     }
 }
 
@@ -336,6 +287,91 @@ impl FromStr for PackageDir {
     }
 }
 
+// ===
+
+struct GitTemplate<'a> {
+    package_name: String,
+    profile_address_hex: String,
+    coin: bool,
+    script: bool,
+    package_dir: &'a Path,
+}
+
+impl GitTemplate<'_> {
+    fn copy_from_git_template(&self) -> anyhow::Result<()> {
+        let template_path = git_download_template()?;
+
+        let GitTemplate {
+            package_name,
+            profile_address_hex,
+            coin,
+            script,
+            package_dir,
+        } = self;
+        let package_lowercase_name = package_name.to_case(Case::Snake);
+
+        cp_r(
+            &template_path.join("_default/sources/"),
+            &package_dir.join("sources"),
+        )?;
+        cp_r(
+            &template_path.join("_default/tests/"),
+            &package_dir.join("tests"),
+        )?;
+
+        let move_toml_path = package_dir.join("Move.toml");
+        let mut move_toml = fs::read_to_string(&move_toml_path).map_err(|err| anyhow!("{err}"))?;
+        if !move_toml.contains("aptos-move/framework/aptos-framework") {
+            move_toml += "\n\n[dependencies.AptosFramework]
+                git = \"https://github.com/aptos-labs/aptos-core.git\"
+                rev = \"main\"
+                subdir = \"aptos-move/framework/aptos-framework\"\n";
+        }
+
+        if *coin {
+            cp_r(
+                &template_path.join("_coin/sources/"),
+                &package_dir.join("sources"),
+            )?;
+            cp_r(
+                &template_path.join("_coin/tests/"),
+                &package_dir.join("tests"),
+            )?;
+
+            if let Some(pos) = move_toml.find("[addresses]") {
+                move_toml.insert_str(
+                    pos + 11,
+                    &format!("\ncoin_address = \"{profile_address_hex}\"\n"),
+                );
+            } else {
+                move_toml += &format!(
+                    "
+            
+                    [addresses]
+                    coin_address = \"{profile_address_hex}\""
+                );
+            }
+        }
+
+        if *script {
+            let js_path = &package_dir.join("js");
+            fs::create_dir(js_path).map_err(|err| anyhow!("{err}"))?;
+            cp_r(&template_path.join("_typescript/js/"), js_path)?;
+        }
+
+        fs::write(move_toml_path, move_toml).map_err(|err| anyhow!("{err}"))?;
+
+        replace_values_in_the_template(
+            package_dir,
+            &[
+                ("package_name", package_name),
+                ("package_lowercase_name", &package_lowercase_name),
+                ("default_address", profile_address_hex),
+            ],
+        )?;
+        todo!()
+    }
+}
 // ===
 
 fn ask_yes_no(text: &str, default: bool) -> bool {
@@ -374,7 +410,10 @@ fn git_download_template() -> anyhow::Result<PathBuf> {
     Ok(tmp_dir)
 }
 
-fn replace_values_in_the_template(package_dir: &Path, values: &[(&str, &String)]) -> Result<()> {
+fn replace_values_in_the_template(
+    package_dir: &Path,
+    values: &[(&str, &String)],
+) -> anyhow::Result<()> {
     let hash_map: HashMap<&str, &String> = values.iter().cloned().collect();
     for path in WalkDir::new(package_dir)
         .into_iter()
@@ -402,8 +441,6 @@ fn replace_values_in_the_template(package_dir: &Path, values: &[(&str, &String)]
     Ok(())
 }
 
-// @todo ===
-
 fn cp_r(from: &Path, to: &Path) -> anyhow::Result<()> {
     for copy_from in WalkDir::new(from)
         .into_iter()
@@ -416,7 +453,7 @@ fn cp_r(from: &Path, to: &Path) -> anyhow::Result<()> {
             copy_from
                 .to_string_lossy()
                 .trim_start_matches(&from.to_string_lossy().to_string())
-                .trim_start_matches("/"),
+                .trim_start_matches('/'),
         );
 
         if copy_from.is_file() {
