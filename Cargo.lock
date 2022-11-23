@@ -191,6 +191,7 @@ dependencies = [
  "shadow-rs",
  "storage-interface",
  "tempfile",
+ "tera",
  "termcolor",
  "thiserror",
  "tokio",
