@@ -175,7 +175,7 @@ fn ensure_targets_deps_dont_intersect(
     ))
 }
 
-fn parse_file(
+pub fn parse_file(
     compilation_env: &mut CompilationEnv,
     files: &mut FilesSourceText,
     fname: Symbol,
