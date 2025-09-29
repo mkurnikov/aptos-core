@@ -1,11 +1,17 @@
 use crate::utils::fs_read_benchmark_artifact;
 use aptos_framework::extended_checks;
-use aptos_gas_schedule::{MiscGasParameters, NativeGasParameters, LATEST_GAS_FEATURE_VERSION};
+use aptos_gas_meter::{StandardGasAlgebra, StandardGasMeter};
+use aptos_gas_schedule::{
+    InitialGasSchedule, MiscGasParameters, NativeGasParameters, VMGasParameters,
+    LATEST_GAS_FEATURE_VERSION,
+};
 use aptos_types::on_chain_config::{
     aptos_test_feature_flags_genesis, Features, TimedFeaturesBuilder,
 };
 use aptos_vm::natives;
 use aptos_vm::natives::unit_test_extensions_hook;
+use aptos_vm_types::resolver::NoopBlockSynchronizationKillSwitch;
+use aptos_vm_types::storage::StorageGasParameters;
 use clap::Args;
 use legacy_move_compiler::compiled_unit::CompiledUnit;
 use legacy_move_compiler::unit_test::NamedOrBytecodeModule;
@@ -17,7 +23,6 @@ use move_core_types::language_storage::ModuleId;
 use move_core_types::value::{serialize_values, MoveValue};
 use move_model::metadata::LanguageVersion;
 use move_package::{BuildConfig, CompilerConfig};
-use move_unit_test::test_reporter::{UnitTestFactory, UnitTestFactoryWithCostTable};
 use move_vm_runtime::config::VMConfig;
 use move_vm_runtime::data_cache::TransactionDataCache;
 use move_vm_runtime::module_traversal::{TraversalContext, TraversalStorage};
@@ -34,6 +39,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
+use move_vm_types::gas::UnmeteredGasMeter;
 
 #[derive(Args)]
 pub struct PackageTestCmd {
@@ -50,7 +56,8 @@ pub struct PackageTestCmd {
     #[clap(long, default_value_t = String::from("0x4e110::twap_tests::test_twap_success"))]
     pub name: String,
 
-    #[clap(long, default_values_t = ["0x4e110".to_string(), "0x456".to_string(), "0x789".to_string()], value_delimiter = ',')]
+    #[clap(long, default_values_t = ["0x4e110".to_string(), "0x456".to_string(), "0x789".to_string()], value_delimiter = ','
+    )]
     pub signers: Vec<String>,
 }
 
@@ -183,7 +190,19 @@ fn run_bench_once(
     let mut extensions = NativeContextExtensions::default();
     unit_test_extensions_hook(&mut extensions);
 
-    let mut gas_meter = UnitTestFactoryWithCostTable::new(None, None).new_gas_meter();
+    let mut vm_gas_params = VMGasParameters::initial();
+    vm_gas_params.txn.max_execution_gas = u64::MAX.into();
+    vm_gas_params.txn.max_io_gas = u64::MAX.into();
+
+    let mut gas_meter = StandardGasMeter::new(StandardGasAlgebra::new(
+        LATEST_GAS_FEATURE_VERSION,
+        vm_gas_params,
+        StorageGasParameters::unlimited(),
+        false,
+        10_000_000_000_000,
+        &NoopBlockSynchronizationKillSwitch {},
+    ));
+
     let mut traversal_context = TraversalContext::new(&traversal_storage);
     let mut data_cache = TransactionDataCache::empty();
 
@@ -199,7 +218,6 @@ fn run_bench_once(
     )?;
 
     let before = Instant::now();
-
     let _ = MoveVM::execute_loaded_function(
         function,
         args,
