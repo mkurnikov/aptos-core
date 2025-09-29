@@ -1,7 +1,6 @@
 // Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{BUILD_PROFILE, PATH_CRATE_ROOT};
 use anyhow::{bail, Result};
 use once_cell::sync::Lazy;
 use std::{
@@ -12,6 +11,8 @@ use std::{
 };
 
 const RUN_MOVE: &str = "run-move";
+const BUILD_PROFILE: &str = "release";
+static PATH_CRATE_ROOT: Lazy<&Path> = Lazy::new(|| Path::new(env!("CARGO_MANIFEST_DIR")));
 
 static PATH_BIN_RUN_MOVE: Lazy<PathBuf> = Lazy::new(|| {
     PATH_CRATE_ROOT
@@ -106,7 +107,7 @@ fn build_binaries() -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn run(regenerate_all: bool) -> Result<()> {
+pub fn run(regenerate_all: bool) -> Result<()> {
     build_binaries()?;
     profile_move_snippets(regenerate_all)?;
 

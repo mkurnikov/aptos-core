@@ -5,6 +5,7 @@ use crate::txn_provider::TxnProvider;
 use aptos_mvhashmap::types::TxnIndex;
 use aptos_types::transaction::{AuxiliaryInfoTrait, BlockExecutableTransaction as Transaction};
 
+#[derive(Clone)]
 pub struct DefaultTxnProvider<T: Transaction, A: AuxiliaryInfoTrait> {
     txns: Vec<T>,
     auxiliary_info: Vec<A>,

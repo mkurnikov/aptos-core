@@ -197,7 +197,7 @@ pub fn configure_for_unit_test() {
 }
 
 #[cfg(feature = "testing")]
-fn unit_test_extensions_hook(exts: &mut NativeContextExtensions) {
+pub fn unit_test_extensions_hook(exts: &mut NativeContextExtensions) {
     use aptos_framework::natives::object::NativeObjectContext;
     use aptos_table_natives::NativeTableContext;
 

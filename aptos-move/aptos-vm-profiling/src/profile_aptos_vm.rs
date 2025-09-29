@@ -1,7 +1,6 @@
 // Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{BUILD_PROFILE, PATH_CRATE_ROOT};
 use anyhow::{bail, Result};
 use aptos_transaction_simulation::GENESIS_CHANGE_SET_HEAD;
 use once_cell::sync::Lazy;
@@ -11,6 +10,9 @@ use std::{
 };
 
 const RUN_APTOS_P2P: &str = "run-aptos-p2p";
+
+const BUILD_PROFILE: &str = "release";
+static PATH_CRATE_ROOT: Lazy<&Path> = Lazy::new(|| Path::new(env!("CARGO_MANIFEST_DIR")));
 
 static PATH_BIN_RUN_APTOS_P2P: Lazy<PathBuf> = Lazy::new(|| {
     PATH_CRATE_ROOT
